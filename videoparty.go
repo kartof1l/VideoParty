@@ -245,6 +245,7 @@ func createRoomHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Страница комнаты
+// Страница комнаты
 func roomHandler(w http.ResponseWriter, r *http.Request) {
 	pathParts := strings.Split(r.URL.Path, "/")
 	if len(pathParts) < 3 {
@@ -274,6 +275,12 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 
 	embedHTML := generateVideoEmbed(room.VideoURL)
 
+	// Получаем хост для WebSocket
+	host := r.Host
+	if host == "" {
+		host = "videoparty-1.onrender.com"
+	}
+
 	html := fmt.Sprintf(`
 <!DOCTYPE html>
 <html>
@@ -285,7 +292,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-	<!-- Навигация (как на главной) -->
+	<!-- Навигация -->
 	<nav class="navbar">
 		<div class="nav-brand">
 			<i class="fas fa-video"></i>
@@ -299,7 +306,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 	</nav>
 
 	<main class="container">
-		<!-- Герой-секция (как на главной) -->
+		<!-- Герой-секция -->
 		<div class="hero">
 			<div class="hero-content">
 				<h2><i class="fas fa-film"></i> %s</h2>
@@ -316,7 +323,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 					<h3><i class="fas fa-user-plus"></i> Invite Friends</h3>
 					<div class="invite-link">
 						<input type="text" id="inviteInput" value="https://videoparty-1.onrender.com/room/%s" readonly>
-								<button class="btn btn-primary" onclick="copyInviteLink()">
+						<button class="btn btn-primary" onclick="copyInviteLink()">
 							<i class="fas fa-copy"></i> Copy Link
 						</button>
 					</div>
@@ -364,7 +371,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 				
 				<!-- Статус -->
 				<div class="connection-status">
-					<span id="status"><i class="fas fa-plug"></i> Connecting...</span>
+					<span id="status"><i class="fas fa-plug"></i> Connecting to WebSocket...</span>
 				</div>
 				
 				<!-- Кнопка назад -->
@@ -374,7 +381,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 			</div>
 		</div>
 		
-		<!-- Платформы (как на главной) -->
+		<!-- Платформы -->
 		<div class="platforms">
 			<h3><i class="fas fa-check-circle"></i> Supported Platforms</h3>
 			<div class="platform-icons">
@@ -398,32 +405,321 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 		</div>
 	</main>
 
-	<!-- Футер (как на главной) -->
+	<!-- Футер -->
 	<footer>
 		<p>Watch videos together • Made with Go & <i class="fas fa-heart" style="color: #ff6b6b;"></i></p>
 	</footer>
 
 	<script>
-		// WebSocket и управление видео
-		%s
+	const roomId = "%s";
+	const username = "%s";
+	const videoUrl = "%s";
+	const ownerName = "%s";
+	let ws;
+
+	// WebSocket соединение
+	function connectWebSocket() {
+		// На Render используем wss://
+		const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+		const wsUrl = wsProtocol + '%s' + '/ws/' + roomId + '?username=' + encodeURIComponent(username);
+		
+		console.log('Connecting to WebSocket:', wsUrl);
+		ws = new WebSocket(wsUrl);
+		
+		ws.onopen = function() {
+			console.log('✅ WebSocket connected');
+			updateStatus('<i class="fas fa-check-circle"></i> Connected to room');
+			ws.send(JSON.stringify({type: 'join', user: username}));
+			
+			// Отправляем текущее состояние видео
+			sendVideoState();
+		};
+		
+		ws.onmessage = function(event) {
+			console.log('📨 WebSocket message:', event.data);
+			try {
+				const msg = JSON.parse(event.data);
+				handleMessage(msg);
+			} catch (e) {
+				console.error('Error parsing message:', e);
+			}
+		};
+		
+		ws.onclose = function(event) {
+			console.log('❌ WebSocket disconnected:', event.code, event.reason);
+			updateStatus('<i class="fas fa-times-circle"></i> Disconnected - Reconnecting...');
+			setTimeout(connectWebSocket, 3000);
+		};
+		
+		ws.onerror = function(error) {
+			console.error('❌ WebSocket error:', error);
+			updateStatus('<i class="fas fa-exclamation-triangle"></i> Connection error');
+		};
+	}
+	
+	function handleMessage(msg) {
+		console.log('Processing message type:', msg.type);
+		switch(msg.type) {
+			case 'chat':
+				addChatMessage(msg.user, msg.data);
+				break;
+			
+			case 'users':
+				updateUsersList(msg.data);
+				break;
+			
+			case 'play':
+				console.log('Received play command');
+				playVideo();
+				break;
+			
+			case 'pause':
+				console.log('Received pause command');
+				pauseVideo();
+				break;
+			
+			case 'seek':
+				console.log('Received seek command:', msg.data);
+				seekVideo(msg.data);
+				break;
+			
+			case 'state':
+				console.log('Received state update:', msg.data);
+				syncVideo(msg.data);
+				break;
+		}
+	}
+	
+	function updateUsersList(users) {
+		const list = document.getElementById('usersList');
+		list.innerHTML = '';
+		users.forEach(user => {
+			const badge = document.createElement('span');
+			badge.className = 'user-badge' + (user === ownerName ? ' owner' : '');
+			badge.innerHTML = user + (user === ownerName ? ' <i class="fas fa-crown"></i>' : '');
+			list.appendChild(badge);
+		});
+		document.getElementById('userCount').textContent = users.length;
+	}
+	
+	function addChatMessage(user, text) {
+		const chat = document.getElementById('chatMessages');
+		const msgDiv = document.createElement('div');
+		msgDiv.className = 'chat-message';
+		msgDiv.innerHTML = '<strong>' + user + ':</strong> ' + text;
+		chat.appendChild(msgDiv);
+		chat.scrollTop = chat.scrollHeight;
+	}
+	
+	// Управление видео
+	function playVideo() {
+		console.log('Playing video');
+		const iframe = document.querySelector('iframe');
+		if (iframe && iframe.src.includes('youtube.com')) {
+			// Для YouTube iframe
+			try {
+				iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+			} catch (e) {
+				console.error('YouTube play error:', e);
+			}
+		}
+		const video = document.querySelector('video');
+		if (video) {
+			video.play().catch(e => console.error('Video play error:', e));
+		}
+	}
+	
+	function pauseVideo() {
+		console.log('Pausing video');
+		const iframe = document.querySelector('iframe');
+		if (iframe && iframe.src.includes('youtube.com')) {
+			// Для YouTube iframe
+			try {
+				iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+			} catch (e) {
+				console.error('YouTube pause error:', e);
+			}
+		}
+		const video = document.querySelector('video');
+		if (video) video.pause();
+	}
+	
+	function seekVideo(time) {
+		console.log('Seeking to:', time);
+		const iframe = document.querySelector('iframe');
+		if (iframe && iframe.src.includes('youtube.com')) {
+			// Для YouTube iframe
+			try {
+				iframe.contentWindow.postMessage('{"event":"command","func":"seekTo","args":[' + time + ',true]}', '*');
+			} catch (e) {
+				console.error('YouTube seek error:', e);
+			}
+		}
+		const video = document.querySelector('video');
+		if (video) video.currentTime = time;
+	}
+	
+	function syncVideo(state) {
+		console.log('Syncing video with state:', state);
+		if (state.currentTime) seekVideo(state.currentTime);
+		if (state.playing) playVideo(); else pauseVideo();
+	}
+	
+	function sendVideoState() {
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			const video = document.querySelector('video');
+			const iframe = document.querySelector('iframe');
+			
+			let currentTime = 0;
+			let playing = false;
+			
+			if (video) {
+				currentTime = video.currentTime;
+				playing = !video.paused;
+			}
+			
+			ws.send(JSON.stringify({
+				type: 'state_update',
+				user: username,
+				data: {
+					playing: playing,
+					currentTime: currentTime
+				}
+			}));
+		}
+	}
+	
+	function sendMessage() {
+		const input = document.getElementById('chatInput');
+		const text = input.value.trim();
+		if (text && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({type: 'chat', user: username, data: text}));
+			input.value = '';
+		}
+	}
+	
+	function syncWithRoom() {
+		sendVideoState();
+	}
+	
+	function copyInviteLink() {
+		const input = document.getElementById('inviteInput');
+		input.select();
+		navigator.clipboard.writeText(input.value);
+		
+		const notification = document.getElementById('copyNotification');
+		notification.style.display = 'block';
+		notification.innerHTML = '<i class="fas fa-check"></i> Link copied to clipboard!';
+		setTimeout(() => {
+			notification.style.display = 'none';
+		}, 2000);
+	}
+	
+	function openOriginal() {
+		window.open(videoUrl, '_blank');
+	}
+	
+	function leaveRoom() {
+		if (confirm('Leave this room?')) {
+			if (ws && ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({type: 'leave', user: username}));
+				ws.close();
+			}
+			window.location.href = '/';
+		}
+	}
+	
+	function updateStatus(text) {
+		document.getElementById('status').innerHTML = text;
+	}
+	
+	function showHelp() {
+		alert('🎬 VideoParty Help:\\n\\n' +
+			  '1. Share the invite link with friends\\n' +
+			  '2. Use "Sync with Room" to match playback\\n' +
+			  '3. Chat with others in real-time\\n' +
+			  '4. Play/pause/seek will sync with everyone');
+	}
+	
+	// Отслеживание видео событий
+	function setupVideoListeners() {
+		const video = document.querySelector('video');
+		if (video) {
+			video.addEventListener('play', function() {
+				console.log('Video played locally');
+				if (ws && ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({type: 'play', user: username}));
+				}
+			});
+			
+			video.addEventListener('pause', function() {
+				console.log('Video paused locally');
+				if (ws && ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({type: 'pause', user: username}));
+				}
+			});
+			
+			video.addEventListener('seeked', function() {
+				console.log('Video seeked locally:', video.currentTime);
+				if (ws && ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({
+						type: 'seek',
+						user: username,
+						data: video.currentTime
+					}));
+				}
+			});
+		}
+		
+		// Для YouTube iframe (ограниченная поддержка)
+		const iframe = document.querySelector('iframe');
+		if (iframe && iframe.src.includes('youtube.com')) {
+			// YouTube API имеет ограничения на управление извне
+			console.log('YouTube iframe detected - limited sync support');
+		}
+	}
+	
+	// Запуск
+	window.onload = function() {
+		console.log('Page loaded, connecting WebSocket...');
+		connectWebSocket();
+		setupVideoListeners();
+		// Авто-фокус на чате
+		document.getElementById('chatInput').focus();
+		
+		// Периодическая проверка соединения
+		setInterval(() => {
+			if (ws && ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({type: 'ping', user: username}));
+			}
+		}, 30000);
+	};
+	
+	// Обработка сообщений от YouTube iframe
+	window.addEventListener('message', function(event) {
+		// Обработка сообщений от YouTube iframe
+		console.log('Message from iframe:', event.data);
+	});
 	</script>
 </body>
 </html>
 `,
-		room.Name,
-		// Стили
-		`<style>`+getCSS()+`</style>`,
-		// Контент
-		room.Name,
-		room.Owner,
-		roomID,
-		userCount,
-		r.Host,
-		roomID,
-		embedHTML,
-		room.Owner,
-		// JavaScript
-		getRoomJavaScript(roomID, username, room.VideoURL, room.Owner))
+		// Параметры для форматирования
+		room.Name,               // %s - title
+		"<style>"+getCSS()+"</style>", // %s - styles
+		room.Name,               // %s - h2
+		room.Owner,              // %s - host name
+		roomID,                  // %s - room ID
+		userCount,               // %d - user count
+		roomID,                  // %s - room ID in invite link
+		embedHTML,               // %s - video embed
+		room.Owner,              // %s - owner badge
+		// JavaScript параметры
+		roomID,                  // %s - roomId
+		username,                // %s - username
+		room.VideoURL,           // %s - videoUrl
+		room.Owner,              // %s - ownerName
+		host)                    // %s - WebSocket host
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
@@ -1596,6 +1892,7 @@ func generateRoomID() string {
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)[:8]
 }
+
 
 
 
