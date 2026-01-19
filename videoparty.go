@@ -432,209 +432,209 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 // JavaScript для комнаты
 func getRoomJavaScript(roomID, username, videoURL, owner string) string {
 	return fmt.Sprintf(`
-	const roomId = "%s";
-	const username = "%s";
-	const videoUrl = "%s";
-	const ownerName = "%s";
-	let ws;
+const roomId = "%s";
+const username = "%s";
+const videoUrl = "%s";
+const ownerName = "%s";
+let ws;
+
+// WebSocket соединение
+function connectWebSocket() {
+	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+	ws = new WebSocket(protocol + '//' + window.location.host + '/ws/' + roomId + '?username=' + encodeURIComponent(username));
 	
-	// WebSocket соединение
-	function connectWebSocket() {
-		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-		ws = new WebSocket(protocol + '//' + window.location.host + '/ws/' + roomId + '?username=' + encodeURIComponent(username));
+	ws.onopen = function() {
+		console.log('WebSocket connected');
+		updateStatus('<i class="fas fa-check-circle"></i> Connected');
+		ws.send(JSON.stringify({type: 'join', user: username}));
+	};
+	
+	ws.onmessage = function(event) {
+		const msg = JSON.parse(event.data);
+		handleMessage(msg);
+	};
+	
+	ws.onclose = function() {
+		updateStatus('<i class="fas fa-times-circle"></i> Disconnected - Reconnecting...');
+		setTimeout(connectWebSocket, 3000);
+	};
+	
+	ws.onerror = function(error) {
+		console.error('WebSocket error:', error);
+		updateStatus('<i class="fas fa-exclamation-triangle"></i> Connection error');
+	};
+}
+
+function handleMessage(msg) {
+	switch(msg.type) {
+		case 'chat':
+			addChatMessage(msg.user, msg.data);
+			break;
 		
-		ws.onopen = function() {
-			console.log('WebSocket connected');
-			updateStatus('<i class="fas fa-check-circle"></i> Connected');
-			ws.send(JSON.stringify({type: 'join', user: username}));
-		};
+		case 'users':
+			updateUsersList(msg.data);
+			break;
 		
-		ws.onmessage = function(event) {
-			const msg = JSON.parse(event.data);
-			handleMessage(msg);
-		};
+		case 'play':
+			playVideo();
+			break;
 		
-		ws.onclose = function() {
-			updateStatus('<i class="fas fa-times-circle"></i> Disconnected - Reconnecting...');
-			setTimeout(connectWebSocket, 3000);
-		};
+		case 'pause':
+			pauseVideo();
+			break;
 		
-		ws.onerror = function(error) {
-			console.error('WebSocket error:', error);
-			updateStatus('<i class="fas fa-exclamation-triangle"></i> Connection error');
-		};
-	}
-	
-	function handleMessage(msg) {
-		switch(msg.type) {
-			case 'chat':
-				addChatMessage(msg.user, msg.data);
-				break;
-			
-			case 'users':
-				updateUsersList(msg.data);
-				break;
-			
-			case 'play':
-				playVideo();
-				break;
-			
-			case 'pause':
-				pauseVideo();
-				break;
-			
-			case 'seek':
-				seekVideo(msg.data);
-				break;
-			
-			case 'state':
-				syncVideo(msg.data);
-				break;
-		}
-	}
-	
-	function updateUsersList(users) {
-		const list = document.getElementById('usersList');
-		list.innerHTML = '';
-		users.forEach(user => {
-			const badge = document.createElement('span');
-			badge.className = 'user-badge' + (user === ownerName ? ' owner' : '');
-			badge.innerHTML = user + (user === ownerName ? ' <i class="fas fa-crown"></i>' : '');
-			list.appendChild(badge);
-		});
-		document.getElementById('userCount').textContent = users.length;
-	}
-	
-	function addChatMessage(user, text) {
-		const chat = document.getElementById('chatMessages');
-		const msgDiv = document.createElement('div');
-		msgDiv.className = 'chat-message';
-		msgDiv.innerHTML = '<strong>' + user + ':</strong> ' + text;
-		chat.appendChild(msgDiv);
-		chat.scrollTop = chat.scrollHeight;
-	}
-	
-	// Управление видео
-	function playVideo() {
-		const video = document.querySelector('video');
-		if (video) video.play();
-	}
-	
-	function pauseVideo() {
-		const video = document.querySelector('video');
-		if (video) video.pause();
-	}
-	
-	function seekVideo(time) {
-		const video = document.querySelector('video');
-		if (video) video.currentTime = time;
-	}
-	
-	function syncVideo(state) {
-		if (state.currentTime) seekVideo(state.currentTime);
-		if (state.playing) playVideo(); else pauseVideo();
-	}
-	
-	function sendMessage() {
-		const input = document.getElementById('chatInput');
-		const text = input.value.trim();
-		if (text && ws.readyState === WebSocket.OPEN) {
-			ws.send(JSON.stringify({type: 'chat', user: username, data: text}));
-			input.value = '';
-		}
-	}
-	
-	function syncWithRoom() {
-		if (ws.readyState === WebSocket.OPEN) {
-			const video = document.querySelector('video');
-			if (video) {
-				ws.send(JSON.stringify({
-					type: 'state_update',
-					user: username,
-					data: {
-						playing: !video.paused,
-						currentTime: video.currentTime
-					}
-				}));
-			}
-		}
-	}
-	
-	function copyInviteLink() {
-		const input = document.getElementById('inviteInput');
-		input.select();
-		navigator.clipboard.writeText(input.value);
+		case 'seek':
+			seekVideo(msg.data);
+			break;
 		
-		const notification = document.getElementById('copyNotification');
-		notification.style.display = 'block';
-		notification.innerHTML = '<i class="fas fa-check"></i> Link copied to clipboard!';
-		setTimeout(() => {
-			notification.style.display = 'none';
-		}, 2000);
+		case 'state':
+			syncVideo(msg.data);
+			break;
 	}
-	
-	function openOriginal() {
-		window.open(videoUrl, '_blank');
+}
+
+function updateUsersList(users) {
+	const list = document.getElementById('usersList');
+	list.innerHTML = '';
+	users.forEach(user => {
+		const badge = document.createElement('span');
+		badge.className = 'user-badge' + (user === ownerName ? ' owner' : '');
+		badge.innerHTML = user + (user === ownerName ? ' <i class="fas fa-crown"></i>' : '');
+		list.appendChild(badge);
+	});
+	document.getElementById('userCount').textContent = users.length;
+}
+
+function addChatMessage(user, text) {
+	const chat = document.getElementById('chatMessages');
+	const msgDiv = document.createElement('div');
+	msgDiv.className = 'chat-message';
+	msgDiv.innerHTML = '<strong>' + user + ':</strong> ' + text;
+	chat.appendChild(msgDiv);
+	chat.scrollTop = chat.scrollHeight;
+}
+
+// Управление видео
+function playVideo() {
+	const video = document.querySelector('video');
+	if (video) video.play();
+}
+
+function pauseVideo() {
+	const video = document.querySelector('video');
+	if (video) video.pause();
+}
+
+function seekVideo(time) {
+	const video = document.querySelector('video');
+	if (video) video.currentTime = time;
+}
+
+function syncVideo(state) {
+	if (state.currentTime) seekVideo(state.currentTime);
+	if (state.playing) playVideo(); else pauseVideo();
+}
+
+function sendMessage() {
+	const input = document.getElementById('chatInput');
+	const text = input.value.trim();
+	if (text && ws.readyState === WebSocket.OPEN) {
+		ws.send(JSON.stringify({type: 'chat', user: username, data: text}));
+		input.value = '';
 	}
-	
-	function leaveRoom() {
-		if (confirm('Leave this room?')) {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({type: 'leave', user: username}));
-				ws.close();
-			}
-			window.location.href = '/';
-		}
-	}
-	
-	function updateStatus(text) {
-		document.getElementById('status').innerHTML = text;
-	}
-	
-	function showHelp() {
-		alert('🎬 VideoParty Help:\\n\\n' +
-			  '1. Share the invite link with friends\\n' +
-			  '2. Use "Sync with Room" to match playback\\n' +
-			  '3. Chat with others in real-time\\n' +
-			  '4. Play/pause/seek will sync with everyone');
-	}
-	
-	// Отслеживание видео событий
-	function setupVideoListeners() {
+}
+
+function syncWithRoom() {
+	if (ws.readyState === WebSocket.OPEN) {
 		const video = document.querySelector('video');
 		if (video) {
-			video.addEventListener('play', function() {
-				if (ws.readyState === WebSocket.OPEN) {
-					ws.send(JSON.stringify({type: 'play', user: username}));
+			ws.send(JSON.stringify({
+				type: 'state_update',
+				user: username,
+				data: {
+					playing: !video.paused,
+					currentTime: video.currentTime
 				}
-			});
-			
-			video.addEventListener('pause', function() {
-				if (ws.readyState === WebSocket.OPEN) {
-					ws.send(JSON.stringify({type: 'pause', user: username}));
-				}
-			});
-			
-			video.addEventListener('seeked', function() {
-				if (ws.readyState === WebSocket.OPEN) {
-					ws.send(JSON.stringify({
-						type: 'seek',
-						user: username,
-						data: video.currentTime
-					}));
-				}
-			});
+			}));
 		}
 	}
+}
+
+function copyInviteLink() {
+	const input = document.getElementById('inviteInput');
+	input.select();
+	navigator.clipboard.writeText(input.value);
 	
-	// Запуск
-	window.onload = function() {
-		connectWebSocket();
-		setupVideoListeners();
-		// Авто-фокус на чате
-		document.getElementById('chatInput').focus();
-	};
-	`, roomID, username, videoURL, owner)
+	const notification = document.getElementById('copyNotification');
+	notification.style.display = 'block';
+	notification.innerHTML = '<i class="fas fa-check"></i> Link copied to clipboard!';
+	setTimeout(() => {
+		notification.style.display = 'none';
+	}, 2000);
+}
+
+function openOriginal() {
+	window.open(videoUrl, '_blank');
+}
+
+function leaveRoom() {
+	if (confirm('Leave this room?')) {
+		if (ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({type: 'leave', user: username}));
+			ws.close();
+		}
+		window.location.href = '/';
+	}
+}
+
+function updateStatus(text) {
+	document.getElementById('status').innerHTML = text;
+}
+
+function showHelp() {
+	alert('🎬 VideoParty Help:\\n\\n' +
+		  '1. Share the invite link with friends\\n' +
+		  '2. Use "Sync with Room" to match playback\\n' +
+		  '3. Chat with others in real-time\\n' +
+		  '4. Play/pause/seek will sync with everyone');
+}
+
+// Отслеживание видео событий
+function setupVideoListeners() {
+	const video = document.querySelector('video');
+	if (video) {
+		video.addEventListener('play', function() {
+			if (ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({type: 'play', user: username}));
+			}
+		});
+		
+		video.addEventListener('pause', function() {
+			if (ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({type: 'pause', user: username}));
+			}
+		});
+		
+		video.addEventListener('seeked', function() {
+			if (ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({
+					type: 'seek',
+					user: username,
+					data: video.currentTime
+				}));
+			}
+		});
+	}
+}
+
+// Запуск
+window.onload = function() {
+	connectWebSocket();
+	setupVideoListeners();
+	// Авто-фокус на чате
+	document.getElementById('chatInput').focus();
+};
+`, roomID, username, videoURL, owner)
 }
 
 // WebSocket handler
@@ -1402,5 +1402,6 @@ func generateRoomID() string {
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)[:8]
 }
+
 
 
