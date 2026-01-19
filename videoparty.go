@@ -315,7 +315,7 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 				<div class="invite-section">
 					<h3><i class="fas fa-user-plus"></i> Invite Friends</h3>
 					<div class="invite-link">
-						<input type="text" id="inviteInput" value="http://%s/room/%s" readonly>
+						<input type="text" id="inviteInput" value="https://videoparty-1.onrender.com/room/%s" readonly>
 								<button class="btn btn-primary" onclick="copyInviteLink()">
 							<i class="fas fa-copy"></i> Copy Link
 						</button>
@@ -1402,4 +1402,5 @@ func generateRoomID() string {
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)[:8]
 }
+
 
