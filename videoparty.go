@@ -430,211 +430,405 @@ func roomHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // JavaScript для комнаты
-func getRoomJavaScript(roomID, username, videoURL, owner string) string {
-	return fmt.Sprintf(`
-const roomId = "%s";
-const username = "%s";
-const videoUrl = "%s";
-const ownerName = "%s";
-let ws;
-
-// WebSocket соединение
-function connectWebSocket() {
-	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	ws = new WebSocket(protocol + '//' + window.location.host + '/ws/' + roomId + '?username=' + encodeURIComponent(username));
-	
-	ws.onopen = function() {
-		console.log('WebSocket connected');
-		updateStatus('<i class="fas fa-check-circle"></i> Connected');
-		ws.send(JSON.stringify({type: 'join', user: username}));
-	};
-	
-	ws.onmessage = function(event) {
-		const msg = JSON.parse(event.data);
-		handleMessage(msg);
-	};
-	
-	ws.onclose = function() {
-		updateStatus('<i class="fas fa-times-circle"></i> Disconnected - Reconnecting...');
-		setTimeout(connectWebSocket, 3000);
-	};
-	
-	ws.onerror = function(error) {
-		console.error('WebSocket error:', error);
-		updateStatus('<i class="fas fa-exclamation-triangle"></i> Connection error');
-	};
-}
-
-function handleMessage(msg) {
-	switch(msg.type) {
-		case 'chat':
-			addChatMessage(msg.user, msg.data);
-			break;
-		
-		case 'users':
-			updateUsersList(msg.data);
-			break;
-		
-		case 'play':
-			playVideo();
-			break;
-		
-		case 'pause':
-			pauseVideo();
-			break;
-		
-		case 'seek':
-			seekVideo(msg.data);
-			break;
-		
-		case 'state':
-			syncVideo(msg.data);
-			break;
+// Страница комнаты
+func roomHandler(w http.ResponseWriter, r *http.Request) {
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 3 {
+		http.NotFound(w, r)
+		return
 	}
-}
+	roomID := pathParts[2]
 
-function updateUsersList(users) {
-	const list = document.getElementById('usersList');
-	list.innerHTML = '';
-	users.forEach(user => {
-		const badge = document.createElement('span');
-		badge.className = 'user-badge' + (user === ownerName ? ' owner' : '');
-		badge.innerHTML = user + (user === ownerName ? ' <i class="fas fa-crown"></i>' : '');
-		list.appendChild(badge);
-	});
-	document.getElementById('userCount').textContent = users.length;
-}
+	rooms.RLock()
+	room, exists := rooms.m[roomID]
+	rooms.RUnlock()
 
-function addChatMessage(user, text) {
-	const chat = document.getElementById('chatMessages');
-	const msgDiv = document.createElement('div');
-	msgDiv.className = 'chat-message';
-	msgDiv.innerHTML = '<strong>' + user + ':</strong> ' + text;
-	chat.appendChild(msgDiv);
-	chat.scrollTop = chat.scrollHeight;
-}
-
-// Управление видео
-function playVideo() {
-	const video = document.querySelector('video');
-	if (video) video.play();
-}
-
-function pauseVideo() {
-	const video = document.querySelector('video');
-	if (video) video.pause();
-}
-
-function seekVideo(time) {
-	const video = document.querySelector('video');
-	if (video) video.currentTime = time;
-}
-
-function syncVideo(state) {
-	if (state.currentTime) seekVideo(state.currentTime);
-	if (state.playing) playVideo(); else pauseVideo();
-}
-
-function sendMessage() {
-	const input = document.getElementById('chatInput');
-	const text = input.value.trim();
-	if (text && ws.readyState === WebSocket.OPEN) {
-		ws.send(JSON.stringify({type: 'chat', user: username, data: text}));
-		input.value = '';
+	if !exists {
+		http.NotFound(w, r)
+		return
 	}
-}
 
-function syncWithRoom() {
-	if (ws.readyState === WebSocket.OPEN) {
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		username = "Guest_" + generateRoomID()[:4]
+	}
+
+	// Список пользователей
+	room.mu.RLock()
+	userCount := len(room.clients)
+	room.mu.RUnlock()
+
+	embedHTML := generateVideoEmbed(room.VideoURL)
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+	<title>🎬 %s - VideoParty</title>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	%s
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+	<!-- Навигация -->
+	<nav class="navbar">
+		<div class="nav-brand">
+			<i class="fas fa-video"></i>
+			<h1>VideoParty</h1>
+		</div>
+		<div class="nav-links">
+			<a href="/"><i class="fas fa-home"></i> Home</a>
+			<a href="/rooms"><i class="fas fa-users"></i> Rooms</a>
+			<a href="#" onclick="showHelp()"><i class="fas fa-question-circle"></i> Help</a>
+		</div>
+	</nav>
+
+	<main class="container">
+		<!-- Герой-секция -->
+		<div class="hero">
+			<div class="hero-content">
+				<h2><i class="fas fa-film"></i> %s</h2>
+				<p class="subtitle">Watching together in real-time</p>
+				
+				<div class="room-info">
+					<p><i class="fas fa-user"></i> Host: <strong>%s</strong></p>
+					<p><i class="fas fa-hashtag"></i> Room ID: <span class="room-id">%s</span></p>
+					<p><i class="fas fa-users"></i> <span id="userCount">%d</span> users watching</p>
+				</div>
+				
+				<!-- Инвайт секция -->
+				<div class="invite-section">
+					<h3><i class="fas fa-user-plus"></i> Invite Friends</h3>
+					<div class="invite-link">
+						<input type="text" id="inviteInput" value="https://videoparty-1.onrender.com/room/%s" readonly>
+						<button class="btn btn-primary" onclick="copyInviteLink()">
+							<i class="fas fa-copy"></i> Copy Link
+						</button>
+					</div>
+					<div id="copyNotification" class="notification">Link copied to clipboard!</div>
+				</div>
+				
+				<!-- Видео плеер -->
+				<div class="video-container">
+					<h3><i class="fas fa-play-circle"></i> Now Playing</h3>
+					%s
+					
+					<div class="controls">
+						<button class="btn btn-primary" id="syncBtn" onclick="syncWithRoom()">
+							<i class="fas fa-sync-alt"></i> Sync with Room
+						</button>
+						<button class="btn btn-secondary" onclick="openOriginal()">
+							<i class="fas fa-external-link-alt"></i> Open Original
+						</button>
+						<button class="btn btn-danger" onclick="leaveRoom()">
+							<i class="fas fa-sign-out-alt"></i> Leave Room
+						</button>
+					</div>
+				</div>
+				
+				<!-- Пользователи -->
+				<div class="user-list">
+					<h3><i class="fas fa-users"></i> Users in Room</h3>
+					<div id="usersList">
+						<span class="user-badge owner">%s <i class="fas fa-crown"></i></span>
+					</div>
+				</div>
+				
+				<!-- Чат -->
+				<div class="chat-section">
+					<h3><i class="fas fa-comments"></i> Live Chat</h3>
+					<div class="chat-messages" id="chatMessages"></div>
+					<div class="chat-input">
+						<input type="text" id="chatInput" placeholder="Type a message..." 
+							   onkeypress="if(event.key=='Enter') sendMessage()">
+						<button class="btn btn-primary" onclick="sendMessage()">
+							<i class="fas fa-paper-plane"></i> Send
+						</button>
+					</div>
+				</div>
+				
+				<!-- Статус -->
+				<div class="connection-status">
+					<span id="status"><i class="fas fa-plug"></i> Connecting...</span>
+				</div>
+				
+				<!-- Кнопка назад -->
+				<a href="/" class="back-link">
+					<i class="fas fa-arrow-left"></i> Back to Home
+				</a>
+			</div>
+		</div>
+		
+		<!-- Платформы -->
+		<div class="platforms">
+			<h3><i class="fas fa-check-circle"></i> Supported Platforms</h3>
+			<div class="platform-icons">
+				<div class="platform">
+					<i class="fab fa-youtube"></i>
+					<span>YouTube</span>
+				</div>
+				<div class="platform">
+					<i class="fab fa-vimeo-v"></i>
+					<span>Vimeo</span>
+				</div>
+				<div class="platform">
+					<i class="fas fa-video"></i>
+					<span>Direct Videos</span>
+				</div>
+				<div class="platform">
+					<i class="fas fa-link"></i>
+					<span>External Links</span>
+				</div>
+			</div>
+		</div>
+	</main>
+
+	<!-- Футер -->
+	<footer>
+		<p>Watch videos together • Made with Go & <i class="fas fa-heart" style="color: #ff6b6b;"></i></p>
+	</footer>
+
+	<script>
+	const roomId = "%s";
+	const username = "%s";
+	const videoUrl = "%s";
+	const ownerName = "%s";
+	let ws;
+
+	// WebSocket соединение
+	function connectWebSocket() {
+		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+		ws = new WebSocket(protocol + '//' + window.location.host + '/ws/' + roomId + '?username=' + encodeURIComponent(username));
+		
+		ws.onopen = function() {
+			console.log('WebSocket connected');
+			updateStatus('<i class="fas fa-check-circle"></i> Connected');
+			ws.send(JSON.stringify({type: 'join', user: username}));
+		};
+		
+		ws.onmessage = function(event) {
+			const msg = JSON.parse(event.data);
+			handleMessage(msg);
+		};
+		
+		ws.onclose = function() {
+			updateStatus('<i class="fas fa-times-circle"></i> Disconnected - Reconnecting...');
+			setTimeout(connectWebSocket, 3000);
+		};
+		
+		ws.onerror = function(error) {
+			console.error('WebSocket error:', error);
+			updateStatus('<i class="fas fa-exclamation-triangle"></i> Connection error');
+		};
+	}
+	
+	function handleMessage(msg) {
+		switch(msg.type) {
+			case 'chat':
+				addChatMessage(msg.user, msg.data);
+				break;
+			
+			case 'users':
+				updateUsersList(msg.data);
+				break;
+			
+			case 'play':
+				playVideo();
+				break;
+			
+			case 'pause':
+				pauseVideo();
+				break;
+			
+			case 'seek':
+				seekVideo(msg.data);
+				break;
+			
+			case 'state':
+				syncVideo(msg.data);
+				break;
+		}
+	}
+	
+	function updateUsersList(users) {
+		const list = document.getElementById('usersList');
+		list.innerHTML = '';
+		users.forEach(user => {
+			const badge = document.createElement('span');
+			badge.className = 'user-badge' + (user === ownerName ? ' owner' : '');
+			badge.innerHTML = user + (user === ownerName ? ' <i class="fas fa-crown"></i>' : '');
+			list.appendChild(badge);
+		});
+		document.getElementById('userCount').textContent = users.length;
+	}
+	
+	function addChatMessage(user, text) {
+		const chat = document.getElementById('chatMessages');
+		const msgDiv = document.createElement('div');
+		msgDiv.className = 'chat-message';
+		msgDiv.innerHTML = '<strong>' + user + ':</strong> ' + text;
+		chat.appendChild(msgDiv);
+		chat.scrollTop = chat.scrollHeight;
+	}
+	
+	// Управление видео
+	function playVideo() {
+		const iframe = document.querySelector('iframe');
+		if (iframe) {
+			// Для YouTube iframe
+			iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+		}
 		const video = document.querySelector('video');
-		if (video) {
-			ws.send(JSON.stringify({
-				type: 'state_update',
-				user: username,
-				data: {
-					playing: !video.paused,
-					currentTime: video.currentTime
-				}
-			}));
-		}
+		if (video) video.play();
 	}
-}
-
-function copyInviteLink() {
-	const input = document.getElementById('inviteInput');
-	input.select();
-	navigator.clipboard.writeText(input.value);
 	
-	const notification = document.getElementById('copyNotification');
-	notification.style.display = 'block';
-	notification.innerHTML = '<i class="fas fa-check"></i> Link copied to clipboard!';
-	setTimeout(() => {
-		notification.style.display = 'none';
-	}, 2000);
-}
-
-function openOriginal() {
-	window.open(videoUrl, '_blank');
-}
-
-function leaveRoom() {
-	if (confirm('Leave this room?')) {
-		if (ws.readyState === WebSocket.OPEN) {
-			ws.send(JSON.stringify({type: 'leave', user: username}));
-			ws.close();
+	function pauseVideo() {
+		const iframe = document.querySelector('iframe');
+		if (iframe) {
+			// Для YouTube iframe
+			iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
 		}
-		window.location.href = '/';
+		const video = document.querySelector('video');
+		if (video) video.pause();
 	}
-}
-
-function updateStatus(text) {
-	document.getElementById('status').innerHTML = text;
-}
-
-function showHelp() {
-	alert('🎬 VideoParty Help:\\n\\n' +
-		  '1. Share the invite link with friends\\n' +
-		  '2. Use "Sync with Room" to match playback\\n' +
-		  '3. Chat with others in real-time\\n' +
-		  '4. Play/pause/seek will sync with everyone');
-}
-
-// Отслеживание видео событий
-function setupVideoListeners() {
-	const video = document.querySelector('video');
-	if (video) {
-		video.addEventListener('play', function() {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({type: 'play', user: username}));
-			}
-		});
-		
-		video.addEventListener('pause', function() {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({type: 'pause', user: username}));
-			}
-		});
-		
-		video.addEventListener('seeked', function() {
-			if (ws.readyState === WebSocket.OPEN) {
+	
+	function seekVideo(time) {
+		const iframe = document.querySelector('iframe');
+		if (iframe) {
+			// Для YouTube iframe
+			iframe.contentWindow.postMessage('{"event":"command","func":"seekTo","args":[' + time + ',true]}', '*');
+		}
+		const video = document.querySelector('video');
+		if (video) video.currentTime = time;
+	}
+	
+	function syncVideo(state) {
+		if (state.currentTime) seekVideo(state.currentTime);
+		if (state.playing) playVideo(); else pauseVideo();
+	}
+	
+	function sendMessage() {
+		const input = document.getElementById('chatInput');
+		const text = input.value.trim();
+		if (text && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({type: 'chat', user: username, data: text}));
+			input.value = '';
+		}
+	}
+	
+	function syncWithRoom() {
+		if (ws.readyState === WebSocket.OPEN) {
+			const video = document.querySelector('video');
+			if (video) {
 				ws.send(JSON.stringify({
-					type: 'seek',
+					type: 'state_update',
 					user: username,
-					data: video.currentTime
+					data: {
+						playing: !video.paused,
+						currentTime: video.currentTime
+					}
 				}));
 			}
-		});
+		}
 	}
-}
+	
+	function copyInviteLink() {
+		const input = document.getElementById('inviteInput');
+		input.select();
+		navigator.clipboard.writeText(input.value);
+		
+		const notification = document.getElementById('copyNotification');
+		notification.style.display = 'block';
+		notification.innerHTML = '<i class="fas fa-check"></i> Link copied to clipboard!';
+		setTimeout(() => {
+			notification.style.display = 'none';
+		}, 2000);
+	}
+	
+	function openOriginal() {
+		window.open(videoUrl, '_blank');
+	}
+	
+	function leaveRoom() {
+		if (confirm('Leave this room?')) {
+			if (ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({type: 'leave', user: username}));
+				ws.close();
+			}
+			window.location.href = '/';
+		}
+	}
+	
+	function updateStatus(text) {
+		document.getElementById('status').innerHTML = text;
+	}
+	
+	function showHelp() {
+		alert('🎬 VideoParty Help:\\n\\n' +
+			  '1. Share the invite link with friends\\n' +
+			  '2. Use "Sync with Room" to match playback\\n' +
+			  '3. Chat with others in real-time\\n' +
+			  '4. Play/pause/seek will sync with everyone');
+	}
+	
+	// Отслеживание видео событий
+	function setupVideoListeners() {
+		const video = document.querySelector('video');
+		if (video) {
+			video.addEventListener('play', function() {
+				if (ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({type: 'play', user: username}));
+				}
+			});
+			
+			video.addEventListener('pause', function() {
+				if (ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({type: 'pause', user: username}));
+				}
+			});
+			
+			video.addEventListener('seeked', function() {
+				if (ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({
+						type: 'seek',
+						user: username,
+						data: video.currentTime
+					}));
+				}
+			});
+		}
+	}
+	
+	// Запуск
+	window.onload = function() {
+		connectWebSocket();
+		setupVideoListeners();
+		// Авто-фокус на чате
+		document.getElementById('chatInput').focus();
+	};
+	</script>
+</body>
+</html>
+`,
+		// Параметры для форматирования
+		room.Name,               // %s - title
+		"<style>"+getCSS()+"</style>", // %s - styles
+		room.Name,               // %s - h2
+		room.Owner,              // %s - host name
+		roomID,                  // %s - room ID
+		userCount,               // %d - user count
+		roomID,                  // %s - room ID in invite link
+		embedHTML,               // %s - video embed
+		room.Owner,              // %s - owner badge
+		// JavaScript параметры
+		roomID,                  // %s - roomId
+		username,                // %s - username
+		room.VideoURL,           // %s - videoUrl
+		room.Owner)              // %s - ownerName
 
-// Запуск
-window.onload = function() {
-	connectWebSocket();
-	setupVideoListeners();
-	// Авто-фокус на чате
-	document.getElementById('chatInput').focus();
-};
-`, roomID, username, videoURL, owner)
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(html))
 }
 
 // WebSocket handler
@@ -1402,6 +1596,7 @@ func generateRoomID() string {
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)[:8]
 }
+
 
 
 
