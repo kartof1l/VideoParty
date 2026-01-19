@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: videoparty
+    env: go
+    region: oregon  # или frankfurt, singapore, ohio
+    plan: free
+    
+    # Команды сборки и запуска
+    buildCommand: |
+      go version
+      go mod download
+      go build -o videoparty
+      
+    startCommand: ./videoparty
+    
+    # Переменные окружения
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: GIN_MODE
+        value: release  # если используешь Gin
+    
+    # Автодеплой из GitHub
+    branch: main
+    repo: https://github.com/твой-username/video-party
+    
+    # Ресурсы (для бесплатного плана)
+    resources:
+      memory: 512MB
+      cpu: 0.1
+    
+    # Health check
+    healthCheckPath: /health
+    numInstances: 1
